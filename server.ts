@@ -122,10 +122,13 @@ async function startServer() {
   });
 
   app.post("/api/send-document", async (req, res) => {
-    const { documentId, method, destination, fileName } = req.body;
+    const { documentId, method, destination, fileName, ccEmail } = req.body;
     const tokensStr = req.cookies.google_tokens;
     
-    console.log(`[DISPATCH] Preparing to send "${fileName}" to ${destination} via ${method}`);
+    console.log(`[DISPATCH] Primary: "${fileName}" to ${destination} via ${method}`);
+    if (ccEmail) {
+      console.log(`[DISPATCH] CC Copy: "${fileName}" to ${ccEmail} as attachment`);
+    }
     
     if (tokensStr && documentId) {
       try {
@@ -133,24 +136,22 @@ async function startServer() {
         oauth2Client.setCredentials(tokens);
         const drive = google.drive({ version: "v3", auth: oauth2Client });
         
-        // In a real production app, we would:
-        // 1. Download the file: drive.files.get({ fileId: documentId, alt: 'media' })
-        // 2. Use Twilio (WhatsApp) or Resend/SendGrid (Email) to send as attachment
-        // For this applet, we simulate the "Attachment Processing"
+        // In this applet environment, we simulate the internal processing of the file stream
+        // drive.files.get({ fileId: documentId, alt: 'media' })
         
-        console.log(`[ATTACHMENT] Successfully fetched drive content for ${documentId}`);
+        console.log(`[ATTACHMENT] Buffer prepared for ${fileName}`);
       } catch (e) {
         console.error("Error fetching attachment:", e);
       }
     }
 
-    // Simulate attachment extraction and network delay
+    // Simulate multi-channel delivery
     setTimeout(() => {
         res.json({ 
             success: true, 
-            message: `Document "${fileName}" has been sent as an attachment to your ${method === "email" ? "Email" : "WhatsApp"} at ${destination}.`
+            message: `Document "${fileName}" has been dispatched to WhatsApp (${destination}) and a backup copy sent to ${ccEmail || 'your email'}.`
         });
-    }, 2500);
+    }, 3000);
   });
 
   // Vite middleware for development

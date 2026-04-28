@@ -37,6 +37,8 @@ export default function App() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [logs, setLogs] = useState<DispatchLog[]>([]);
+  const [pendingDispatch, setPendingDispatch] = useState<{ doc: Document; destination: string; method: "whatsapp" | "email" } | null>(null);
+  const [isSubmitInProgress, setIsSubmitInProgress] = useState(false);
   const [userSettings, setUserSettings] = useState({
     email: "ctrivedi@deloitte.com",
     whatsapp: "+919876543210",
@@ -137,29 +139,15 @@ export default function App() {
       if (analysis.documentId) {
         const doc = documents.find(d => d.id === analysis.documentId);
         if (doc) {
+          setPendingDispatch({
+            doc,
+            method: userSettings.preferredMethod,
+            destination: userSettings.preferredMethod === "whatsapp" ? userSettings.whatsapp : userSettings.email
+          });
+          
           setLogs(prev => prev.map(l => l.id === newLog.id ? 
             { ...l, status: "sending", documentName: doc.name } : l
           ));
-
-          const response = await fetch("/api/send-document", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              documentId: doc.id,
-              fileName: doc.name,
-              method: userSettings.preferredMethod,
-              destination: userSettings.preferredMethod === "email" ? userSettings.email : userSettings.whatsapp
-            })
-          });
-          
-          const result = await response.json();
-          if (result.success) {
-            setLogs(prev => prev.map(l => l.id === newLog.id ? 
-              { ...l, status: "sent", message: result.message } : l
-            ));
-          } else {
-            throw new Error(result.error);
-          }
         } else {
           throw new Error("Document not found in Drive library");
         }
@@ -170,6 +158,41 @@ export default function App() {
       setLogs(prev => prev.map(l => l.id === newLog.id ? 
         { ...l, status: "error", message: error.message } : l
       ));
+    }
+  };
+
+  const handleConfirmDispatch = async () => {
+    if (!pendingDispatch) return;
+    
+    setIsSubmitInProgress(true);
+    const { doc, method, destination } = pendingDispatch;
+    
+    try {
+      const response = await fetch("/api/send-document", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          documentId: doc.id,
+          fileName: doc.name,
+          method,
+          destination,
+          ccEmail: "ctrivedi@deloitte.com" // Hardcoded CC as per requirement
+        })
+      });
+      
+      const result = await response.json();
+      if (result.success) {
+        setLogs(prev => prev.map(l => l.documentName === doc.name && l.status === 'sending' ? 
+          { ...l, status: "sent", message: result.message } : l
+        ));
+        setPendingDispatch(null);
+      } else {
+        throw new Error(result.error);
+      }
+    } catch (error: any) {
+      alert("Dispatch failed: " + error.message);
+    } finally {
+      setIsSubmitInProgress(false);
     }
   };
 
@@ -254,7 +277,77 @@ export default function App() {
                   </motion.div>
                 )}
 
-                <div className="flex-1 flex flex-col items-center justify-center py-12">
+                <div className="flex-1 flex flex-col items-center justify-center py-12 relative">
+                  <AnimatePresence>
+                    {pendingDispatch && (
+                      <motion.div 
+                        initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                        className="absolute inset-0 z-20 bg-white p-6 rounded-[2.5rem] shadow-2xl flex flex-col border-2 border-black"
+                      >
+                        <div className="flex justify-between items-start mb-6">
+                           <div>
+                             <h3 className="text-2xl font-black tracking-tighter leading-none mb-1">Send File?</h3>
+                             <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Confirmation Required</p>
+                           </div>
+                           <div className="flex gap-2">
+                             <button 
+                              onClick={() => setActiveTab("settings")}
+                              className="text-[10px] font-black uppercase text-gray-400 border-b border-gray-400 pb-0.5"
+                             >
+                               Edit Info
+                             </button>
+                             <button 
+                              onClick={() => {
+                                setPendingDispatch(null);
+                                setLogs(prev => prev.filter(l => l.status !== 'sending'));
+                              }}
+                              className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center text-gray-400"
+                             >
+                               <X size={18} />
+                             </button>
+                           </div>
+                        </div>
+
+                        <div className="flex-1 space-y-4 overflow-y-auto pr-1">
+                          <div className="p-5 bg-gray-50 rounded-[2rem]">
+                            <div className="flex items-center gap-3 mb-1">
+                               <FileText size={16} className="text-black" />
+                               <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">Document</span>
+                            </div>
+                            <p className="font-black text-lg line-clamp-1">{pendingDispatch.doc.name}</p>
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-3">
+                            <div className="p-5 bg-green-50 rounded-[2rem] border border-green-100">
+                              <div className="flex items-center gap-3 mb-1 text-green-700">
+                                 <MessageSquare size={16} />
+                                 <span className="text-[10px] font-black uppercase tracking-widest">To WhatsApp</span>
+                              </div>
+                              <p className="font-black text-lg">{pendingDispatch.destination}</p>
+                            </div>
+                            <div className="p-5 bg-blue-50 rounded-[2rem] border border-blue-100">
+                              <div className="flex items-center gap-3 mb-1 text-blue-700">
+                                 <Mail size={16} />
+                                 <span className="text-[10px] font-black uppercase tracking-widest">CC Copy To</span>
+                              </div>
+                              <p className="font-black text-sm">ctrivedi@deloitte.com</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <button 
+                          onClick={handleConfirmDispatch}
+                          disabled={isSubmitInProgress}
+                          className="mt-6 w-full bg-black text-white py-5 rounded-[2rem] font-black text-xl flex items-center justify-center gap-3 shadow-xl active:scale-95 transition-transform disabled:opacity-50"
+                        >
+                          {isSubmitInProgress ? <Loader2 className="animate-spin" /> : "SUBMIT"}
+                        </button>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
                   <div className="relative">
                     <motion.div 
                       animate={isListening ? { scale: [1, 1.15, 1], rotate: [0, 5, -5, 0] } : {}}
