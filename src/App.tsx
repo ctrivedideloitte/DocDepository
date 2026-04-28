@@ -15,10 +15,20 @@ import {
   CheckCircle2,
   AlertCircle,
   X,
-  ArrowRight
+  ArrowRight,
+  ShieldCheck,
+  Zap,
+  Globe,
+  Database
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { analyzeRequest, Document } from "./services/gemini";
+
+interface Document {
+  id: string;
+  name: string;
+  description: string;
+  type: string;
+}
 
 interface DispatchLog {
   id: string;
@@ -39,11 +49,12 @@ export default function App() {
   const [logs, setLogs] = useState<DispatchLog[]>([]);
   const [pendingDispatch, setPendingDispatch] = useState<{ doc: Document; destination: string; method: "whatsapp" | "email" } | null>(null);
   const [isSubmitInProgress, setIsSubmitInProgress] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  
   const [userSettings, setUserSettings] = useState({
     email: "ctrivedi@deloitte.com",
     whatsapp: "+919876543210",
-    preferredMethod: "whatsapp" as "email" | "whatsapp",
-    autoSend: true
+    preferredMethod: "whatsapp" as "email" | "whatsapp"
   });
   
   const recognitionRef = useRef<any>(null);
@@ -61,14 +72,16 @@ export default function App() {
     const SpeechRecognition = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
     if (SpeechRecognition) {
       recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = false;
+      recognitionRef.current.continuous = true;
       recognitionRef.current.interimResults = true;
-      recognitionRef.current.lang = 'en-US';
+      recognitionRef.current.lang = 'en-IN';
 
       recognitionRef.current.onresult = (event: any) => {
-        const current = event.resultIndex;
-        const transcriptText = event.results[current][0].transcript;
-        setTranscript(transcriptText);
+        let currentTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          currentTranscript += event.results[i][0].transcript;
+        }
+        setTranscript(currentTranscript);
       };
 
       recognitionRef.current.onend = () => {
@@ -76,12 +89,11 @@ export default function App() {
       };
 
       recognitionRef.current.onerror = (event: any) => {
-        console.error("Speech recognition error", event.error);
         setIsListening(false);
       };
     }
 
-    // Load logs from local storage
+    // Load logs
     const savedLogs = localStorage.getItem("dispatch_logs");
     if (savedLogs) {
       try {
@@ -89,12 +101,6 @@ export default function App() {
       } catch (e) {}
     }
   }, []);
-
-  useEffect(() => {
-    if (transcript && !isListening && transcript.length > 5) {
-      processVoiceRequest(transcript);
-    }
-  }, [isListening, transcript]);
 
   useEffect(() => {
     localStorage.setItem("dispatch_logs", JSON.stringify(logs));
@@ -115,49 +121,61 @@ export default function App() {
       recognitionRef.current?.stop();
     } else {
       setTranscript("");
+      setPendingDispatch(null);
       recognitionRef.current?.start();
       setIsListening(true);
     }
   };
 
   const processVoiceRequest = async (text: string) => {
+    if (!text) return;
+    
     const newLog: DispatchLog = {
       id: Math.random().toString(36).substr(2, 9),
       status: "processing",
-      destination: userSettings.preferredMethod === "whatsapp" ? userSettings.whatsapp : userSettings.email,
-      method: userSettings.preferredMethod,
+      destination: userSettings.whatsapp,
+      method: "whatsapp",
       timestamp: new Date()
     };
     
     setLogs(prev => [newLog, ...prev]);
+    setIsAnalyzing(true);
 
     try {
-      if (!isAuthenticated) throw new Error("Google Drive not connected");
+      if (!isAuthenticated) throw new Error("Google Drive disconnected");
 
-      const analysis = await analyzeRequest(text, documents);
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, documents })
+      });
+      
+      const analysis = await response.json();
       
       if (analysis.documentId) {
         const doc = documents.find(d => d.id === analysis.documentId);
         if (doc) {
           setPendingDispatch({
             doc,
-            method: userSettings.preferredMethod,
-            destination: userSettings.preferredMethod === "whatsapp" ? userSettings.whatsapp : userSettings.email
+            method: "whatsapp",
+            destination: userSettings.whatsapp
           });
           
           setLogs(prev => prev.map(l => l.id === newLog.id ? 
             { ...l, status: "sending", documentName: doc.name } : l
           ));
         } else {
-          throw new Error("Document not found in Drive library");
+          throw new Error("Document mismatch");
         }
       } else {
-        throw new Error("Couldn't identify that document. Try saying 'Aadhaar Card' or 'Passport'.");
+        throw new Error("Could not identify document");
       }
     } catch (error: any) {
       setLogs(prev => prev.map(l => l.id === newLog.id ? 
         { ...l, status: "error", message: error.message } : l
       ));
+    } finally {
+      setIsAnalyzing(false);
     }
   };
 
@@ -165,7 +183,7 @@ export default function App() {
     if (!pendingDispatch) return;
     
     setIsSubmitInProgress(true);
-    const { doc, method, destination } = pendingDispatch;
+    const { doc, destination } = pendingDispatch;
     
     try {
       const response = await fetch("/api/send-document", {
@@ -174,9 +192,7 @@ export default function App() {
         body: JSON.stringify({
           documentId: doc.id,
           fileName: doc.name,
-          method,
-          destination,
-          ccEmail: "ctrivedi@deloitte.com" // Hardcoded CC as per requirement
+          destination
         })
       });
       
@@ -186,11 +202,12 @@ export default function App() {
           { ...l, status: "sent", message: result.message } : l
         ));
         setPendingDispatch(null);
+        setTranscript("");
       } else {
         throw new Error(result.error);
       }
     } catch (error: any) {
-      alert("Dispatch failed: " + error.message);
+      alert("Error: " + error.message);
     } finally {
       setIsSubmitInProgress(false);
     }
@@ -214,40 +231,38 @@ export default function App() {
   }, []);
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-[#F0F2F5] font-sans text-gray-900">
-      {/* Container that acts like a standalone app */}
-      <div className="w-full h-screen md:max-w-md md:max-h-[850px] bg-white md:rounded-[3rem] shadow-2xl overflow-hidden relative flex flex-col md:border-[10px] border-gray-900">
+    <div className="flex items-center justify-center min-h-screen bg-[#050505] font-sans selection:bg-blue-500/30">
+      {/* Mobile Frame */}
+      <div className="w-full h-screen md:max-w-[400px] md:max-h-[840px] bg-[#121214] md:rounded-[3.5rem] shadow-[0_0_80px_rgba(0,0,0,0.5)] overflow-hidden relative flex flex-col md:border-[12px] border-[#1A1A1C]">
         
-        {/* Status Bar */}
-        <div className="h-10 px-8 flex justify-between items-center text-[10px] font-bold z-20">
+        {/* Status Notch */}
+        <div className="h-12 flex justify-between items-center px-8 text-[11px] font-mono text-white/30 z-30">
           <span>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-          <div className="flex gap-1.5 items-center">
-            <div className="w-3.5 h-1.5 bg-gray-900 rounded-[2px] opacity-20"></div>
-            <div className="w-4 h-2 bg-gray-900 rounded-[2px]"></div>
+          <div className="flex gap-2 items-center">
+            <Zap size={10} className="text-yellow-500" />
+            <Globe size={10} />
+            <div className="w-5 h-2.5 bg-white/10 rounded-sm border border-white/10"></div>
           </div>
         </div>
 
-        {/* Header */}
-        <header className="px-6 py-4 flex justify-between items-center bg-white/80 backdrop-blur-md sticky top-0 z-10 border-b border-gray-50">
-          <div>
-            <h1 className="text-xl font-black tracking-tighter">DOC DISPATCH</h1>
-            <div className="flex items-center gap-1.5 mt-0.5">
-              <div className={`w-1.5 h-1.5 rounded-full ${isAuthenticated ? 'bg-green-500' : 'bg-red-500'}`}></div>
-              <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">
-                {isAuthenticated ? 'Drive Connected' : 'Drive Offline'}
-              </span>
-            </div>
+        {/* Global Nav Indicator */}
+        <div className="absolute top-0 px-6 py-4 w-full flex justify-between items-center z-20">
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${isAuthenticated ? 'bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]' : 'bg-red-500 shadow-[0_0_10px_rgba(239,44,44,0.5)]'}`}></div>
+            <span className="text-[10px] font-mono font-bold tracking-widest text-white/40 uppercase">
+              {isAuthenticated ? 'System Ready' : 'Drivestore Offline'}
+            </span>
           </div>
           <button 
             onClick={() => setActiveTab("settings")}
-            className="p-2.5 bg-gray-50 rounded-2xl text-gray-400 hover:text-black transition-colors"
+            className="w-10 h-10 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white/40 hover:text-white transition-colors"
           >
-            <Settings size={20} />
+            <Settings size={18} />
           </button>
-        </header>
+        </div>
 
-        {/* Content Area */}
-        <main className="flex-1 overflow-y-auto bg-gray-50/50">
+        {/* Main Interface */}
+        <main className="flex-1 flex flex-col relative overflow-hidden">
           <AnimatePresence mode="wait">
             {activeTab === "voice" && (
               <motion.div 
@@ -255,154 +270,113 @@ export default function App() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="h-full flex flex-col p-6"
+                className="flex-1 flex flex-col"
               >
-                {!isAuthenticated && (
-                  <motion.div 
-                    initial={{ y: -20, opacity: 0 }}
-                    animate={{ y: 0, opacity: 1 }}
-                    className="bg-black p-6 rounded-[2.5rem] text-white shadow-xl mb-8 relative overflow-hidden"
-                  >
-                    <div className="relative z-10">
-                      <h3 className="font-bold text-lg mb-1 leading-tight">Link Google Drive</h3>
-                      <p className="text-white/50 text-[11px] mb-4 font-medium uppercase tracking-wider">Required for document search</p>
-                      <button 
-                        onClick={handleConnectDrive}
-                        className="w-full bg-white text-black py-3.5 rounded-2xl font-bold text-sm tracking-tight active:scale-95 transition-transform"
-                      >
-                        Authorize Account
-                      </button>
-                    </div>
-                    <div className="absolute -right-4 -bottom-4 w-24 h-24 bg-white/10 rounded-full blur-2xl"></div>
-                  </motion.div>
-                )}
-
-                <div className="flex-1 flex flex-col items-center justify-center py-12 relative">
-                  <AnimatePresence>
-                    {pendingDispatch && (
-                      <motion.div 
-                        initial={{ opacity: 0, scale: 0.9, y: 20 }}
-                        animate={{ opacity: 1, scale: 1, y: 0 }}
-                        exit={{ opacity: 0, scale: 0.9, y: 20 }}
-                        className="absolute inset-0 z-20 bg-white p-6 rounded-[2.5rem] shadow-2xl flex flex-col border-2 border-black"
-                      >
-                        <div className="flex justify-between items-start mb-6">
-                           <div>
-                             <h3 className="text-2xl font-black tracking-tighter leading-none mb-1">Send File?</h3>
-                             <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Confirmation Required</p>
-                           </div>
-                           <div className="flex gap-2">
-                             <button 
-                              onClick={() => setActiveTab("settings")}
-                              className="text-[10px] font-black uppercase text-gray-400 border-b border-gray-400 pb-0.5"
-                             >
-                               Edit Info
-                             </button>
-                             <button 
-                              onClick={() => {
-                                setPendingDispatch(null);
-                                setLogs(prev => prev.filter(l => l.status !== 'sending'));
-                              }}
-                              className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center text-gray-400"
-                             >
-                               <X size={18} />
-                             </button>
-                           </div>
-                        </div>
-
-                        <div className="flex-1 space-y-4 overflow-y-auto pr-1">
-                          <div className="p-5 bg-gray-50 rounded-[2rem]">
-                            <div className="flex items-center gap-3 mb-1">
-                               <FileText size={16} className="text-black" />
-                               <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">Document</span>
-                            </div>
-                            <p className="font-black text-lg line-clamp-1">{pendingDispatch.doc.name}</p>
-                          </div>
-
-                          <div className="grid grid-cols-1 gap-3">
-                            <div className="p-5 bg-green-50 rounded-[2rem] border border-green-100">
-                              <div className="flex items-center gap-3 mb-1 text-green-700">
-                                 <MessageSquare size={16} />
-                                 <span className="text-[10px] font-black uppercase tracking-widest">To WhatsApp</span>
-                              </div>
-                              <p className="font-black text-lg">{pendingDispatch.destination}</p>
-                            </div>
-                            <div className="p-5 bg-blue-50 rounded-[2rem] border border-blue-100">
-                              <div className="flex items-center gap-3 mb-1 text-blue-700">
-                                 <Mail size={16} />
-                                 <span className="text-[10px] font-black uppercase tracking-widest">CC Copy To</span>
-                              </div>
-                              <p className="font-black text-sm">ctrivedi@deloitte.com</p>
-                            </div>
-                          </div>
-                        </div>
-
-                        <button 
-                          onClick={handleConfirmDispatch}
-                          disabled={isSubmitInProgress}
-                          className="mt-6 w-full bg-black text-white py-5 rounded-[2rem] font-black text-xl flex items-center justify-center gap-3 shadow-xl active:scale-95 transition-transform disabled:opacity-50"
-                        >
-                          {isSubmitInProgress ? <Loader2 className="animate-spin" /> : "SUBMIT"}
-                        </button>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-
-                  <div className="relative">
+                {/* Visualizer Area */}
+                <div className="h-[40%] flex items-center justify-center relative">
+                  <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(59,130,246,0.1),transparent_70%)]"></div>
+                  
+                  <div className="relative z-10">
                     <motion.div 
-                      animate={isListening ? { scale: [1, 1.15, 1], rotate: [0, 5, -5, 0] } : {}}
+                      animate={isListening ? { 
+                        scale: [1, 1.1, 1],
+                        borderColor: ['rgba(255,255,255,0.1)', 'rgba(59,130,246,0.5)', 'rgba(255,255,255,0.1)']
+                      } : {}}
                       transition={{ repeat: Infinity, duration: 2 }}
-                      className={`w-40 h-40 rounded-full flex items-center justify-center transition-all duration-700 shadow-2xl ${isListening ? 'bg-black text-white shadow-black/40' : 'bg-white border-2 border-gray-100 text-gray-300'}`}
+                      className={`w-48 h-48 rounded-full border-4 flex items-center justify-center transition-all duration-500 ${isListening ? 'bg-blue-600/10 border-blue-500 shadow-[0_0_50px_rgba(59,130,246,0.2)]' : 'bg-white/5 border-white/5'}`}
                     >
                       <button 
                         onClick={toggleListening}
-                        className="w-full h-full rounded-full flex items-center justify-center relative active:scale-95 transition-transform"
+                        className="w-full h-full rounded-full flex flex-col items-center justify-center gap-3 relative overflow-hidden group"
                       >
-                        <Mic size={56} className={isListening ? 'animate-pulse' : ''} />
+                        <div className={`absolute inset-0 transition-opacity duration-500 ${isListening ? 'opacity-100' : 'opacity-0'}`}>
+                           <div className="w-full h-full bg-[conic-gradient(from_0deg,transparent,rgba(59,130,246,0.4),transparent)] animate-[spin_3s_linear_infinite]"></div>
+                        </div>
+                        <Mic size={48} className={`relative z-10 transition-colors ${isListening ? 'text-white' : 'text-white/20'}`} />
+                        {isListening && (
+                          <span className="text-[10px] font-mono font-black tracking-widest text-blue-400 animate-pulse relative z-10">RECORDING</span>
+                        )}
                       </button>
                     </motion.div>
-                    
-                    {isListening && (
-                      <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 flex gap-1.5 items-end h-8">
-                         {[1,2,3,4,5,6].map(i => (
-                           <motion.div 
-                              key={i}
-                              animate={{ height: [10, 32, 10] }}
-                              transition={{ repeat: Infinity, duration: 0.6, delay: i * 0.1 }}
-                              className="w-1 bg-black rounded-full"
-                           />
-                         ))}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="mt-16 text-center">
-                    <h2 className="text-2xl font-black tracking-tight mb-3">
-                      {isListening ? "Ready to Listen" : "Tap Trigger"}
-                    </h2>
-                    <div className="bg-white/50 px-6 py-3 rounded-2xl border border-gray-100 min-h-[60px] flex items-center justify-center">
-                      <p className={`text-sm font-medium leading-relaxed ${transcript ? 'text-black font-bold' : 'text-gray-300'}`}>
-                        {transcript || '"Send my PAN card to my WhatsApp"'}
-                      </p>
-                    </div>
                   </div>
                 </div>
 
-                {/* Memory Bar */}
-                <div className="mt-auto">
-                   <div className="flex justify-between items-center mb-4 px-2">
-                     <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400">Recall Memory</h3>
-                   </div>
-                   <div className="bg-white p-5 rounded-[2.5rem] border border-gray-100 shadow-sm flex items-center gap-4 active:scale-98 transition-transform">
-                     <div className={`w-12 h-12 rounded-[1.5rem] flex items-center justify-center ${userSettings.preferredMethod === 'whatsapp' ? 'bg-green-50 text-green-600' : 'bg-blue-50 text-blue-600'}`}>
-                       {userSettings.preferredMethod === 'whatsapp' ? <MessageSquare size={24} /> : <Mail size={24} />}
-                     </div>
-                     <div className="flex-1 min-w-0">
-                        <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-0.5">Stored Destination</p>
-                        <p className="text-sm font-black truncate">{userSettings.preferredMethod === 'whatsapp' ? userSettings.whatsapp : userSettings.email}</p>
-                     </div>
-                     <ArrowRight size={20} className="text-gray-200" />
-                   </div>
+                {/* Transcription Terminal */}
+                <div className="flex-1 px-8 flex flex-col">
+                  <div className="flex items-center gap-2 mb-4">
+                     <div className="w-1 h-3 bg-blue-500"></div>
+                     <span className="text-[10px] font-mono font-bold tracking-[0.3em] text-white/30 uppercase">Terminal Input</span>
+                  </div>
+
+                  <div className={`flex-1 rounded-[2.5rem] bg-black/40 border-2 border-white/5 p-6 shadow-inner relative group transition-all duration-500 ${transcript ? 'border-white/10' : ''}`}>
+                    <div className="absolute top-4 right-6 flex gap-1">
+                      <div className="w-2 h-2 rounded-full bg-white/10"></div>
+                      <div className="w-2 h-2 rounded-full bg-white/10"></div>
+                    </div>
+
+                    <p className={`font-mono text-sm leading-relaxed ${transcript ? 'text-white' : 'text-white/10 italic'}`}>
+                      {transcript || "> System waiting for audio signal..."}
+                    </p>
+
+                    {isListening && (
+                      <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: "20%" }}
+                        transition={{ repeat: Infinity, duration: 0.8 }}
+                        className="h-0.5 bg-blue-500 absolute bottom-6 left-6"
+                      />
+                    )}
+                  </div>
+
+                  {/* Actions Bar */}
+                    <div className="h-32 flex items-center justify-center">
+                    <AnimatePresence mode="wait">
+                      {!isListening && transcript && !pendingDispatch && (
+                        <motion.button
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.9 }}
+                          onClick={() => processVoiceRequest(transcript)}
+                          disabled={isAnalyzing}
+                          className="w-full py-5 bg-white text-black rounded-[2rem] font-black text-sm tracking-widest uppercase flex items-center justify-center gap-3 active:scale-95 transition-transform disabled:opacity-50"
+                        >
+                          {isAnalyzing ? (
+                            <>
+                              <Loader2 className="animate-spin" size={18} />
+                              Analyzing...
+                            </>
+                          ) : (
+                            <>
+                              Analyze Command <ArrowRight size={18} />
+                            </>
+                          )}
+                        </motion.button>
+                      )}
+
+                      {pendingDispatch && (
+                        <motion.div 
+                          initial={{ opacity: 0, scale: 0.9 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          className="w-full h-24 bg-blue-600 rounded-[2rem] p-1 flex items-center overflow-hidden shadow-[0_20px_50px_rgba(59,130,246,0.3)]"
+                        >
+                          <div className="flex-1 px-6">
+                            <div className="flex items-center gap-2 mb-0.5">
+                              <ShieldCheck size={14} className="text-white/60" />
+                              <span className="text-[9px] font-black tracking-widest text-white/60 uppercase">Ready to Dispatch</span>
+                            </div>
+                            <p className="font-black text-white text-sm truncate">{pendingDispatch.doc.name}</p>
+                          </div>
+                          <button 
+                            onClick={handleConfirmDispatch}
+                            disabled={isSubmitInProgress}
+                            className="h-full bg-white text-black px-10 rounded-[1.8rem] font-black text-lg tracking-tighter hover:bg-gray-100 transition-colors disabled:opacity-50"
+                          >
+                            {isSubmitInProgress ? <Loader2 className="animate-spin" /> : "DISPATCH"}
+                          </button>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
                 </div>
               </motion.div>
             )}
@@ -413,53 +387,39 @@ export default function App() {
                 initial={{ opacity: 0, x: 20 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -20 }}
-                className="p-6 h-full flex flex-col"
+                className="p-8 h-full flex flex-col"
               >
-                <div className="flex justify-between items-end mb-8 px-2">
-                  <h2 className="text-3xl font-black tracking-tighter">Activity</h2>
-                  <button onClick={() => setLogs([])} className="text-[10px] uppercase font-black text-gray-300 tracking-widest">Wipe</button>
+                <div className="flex justify-between items-end mb-10">
+                  <h2 className="text-4xl font-black tracking-tighter text-white">History</h2>
+                  <button onClick={() => setLogs([])} className="text-[10px] font-mono font-bold tracking-widest text-white/30 hover:text-white uppercase">Purge All</button>
                 </div>
                 
-                <div className="flex-1 space-y-4">
+                <div className="flex-1 space-y-4 overflow-y-auto pr-2 custom-scrollbar">
                   {logs.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center h-full opacity-10">
-                      <History size={64} className="mb-4" />
-                      <p className="font-bold uppercase tracking-widest text-xs">Waiting for command</p>
+                    <div className="h-full flex flex-col items-center justify-center text-white/10">
+                      <History size={80} className="mb-4 opacity-20" />
+                      <p className="font-mono text-[10px] font-bold tracking-[0.5em] uppercase">No Logs Detected</p>
                     </div>
                   ) : (
                     logs.map(log => (
-                      <motion.div 
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        key={log.id} 
-                        className="p-5 bg-white rounded-[2rem] border border-gray-100 shadow-sm flex items-center gap-4"
-                      >
-                        <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 shadow-sm border border-gray-50 ${
-                          log.status === 'sent' ? 'bg-green-50 text-green-600' : 
-                          log.status === 'error' ? 'bg-red-50 text-red-500' : 'bg-gray-50 text-gray-400'
+                      <div key={log.id} className="p-5 bg-white/[0.03] border border-white/5 rounded-[2rem] flex items-center gap-4">
+                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
+                          log.status === 'sent' ? 'bg-blue-500/10 text-blue-500' : 
+                          log.status === 'error' ? 'bg-red-500/10 text-red-500' : 'bg-white/5 text-white/20'
                         }`}>
-                          {log.status === 'processing' || log.status === 'sending' ? (
-                            <Loader2 size={28} className="animate-spin" />
-                          ) : log.status === 'sent' ? (
-                            <CheckCircle2 size={28} />
-                          ) : (
-                            <AlertCircle size={28} />
-                          )}
+                          {log.status === 'processing' || log.status === 'sending' ? <Loader2 size={24} className="animate-spin" /> : 
+                           log.status === 'sent' ? <CheckCircle2 size={24} /> : <AlertCircle size={24} />}
                         </div>
-                        <div className="flex-1 overflow-hidden">
-                          <p className="text-sm font-black truncate text-gray-900">{log.documentName || "Identifying..."}</p>
-                          <div className="mt-1">
-                            <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full ${
-                              log.status === 'sent' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
-                            }`}>
-                              {log.status === 'sent' ? 'Attachment Dispatched' : log.status}
-                            </span>
-                          </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-bold text-sm truncate text-white/80">{log.documentName || "Unknown Doc"}</p>
+                          <p className="text-[9px] font-mono text-white/30 uppercase tracking-widest mt-0.5">
+                            {log.status === 'sent' ? 'Attached & Sent' : log.status}
+                          </p>
                         </div>
-                        <span className="text-[10px] font-bold text-gray-300">
+                        <span className="text-[9px] font-mono text-white/20">
                           {log.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </span>
-                      </motion.div>
+                      </div>
                     ))
                   )}
                 </div>
@@ -469,116 +429,118 @@ export default function App() {
             {activeTab === "settings" && (
               <motion.div 
                 key="settings"
-                initial={{ opacity: 0, y: 30 }}
+                initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 className="p-8 h-full flex flex-col"
               >
                 <div className="flex justify-between items-center mb-10">
-                   <h2 className="text-3xl font-black tracking-tighter">Memory</h2>
-                   <button 
-                    onClick={() => setActiveTab("voice")}
-                    className="w-10 h-10 rounded-2xl bg-gray-50 flex items-center justify-center text-gray-400"
-                   >
-                     <X size={20} />
-                   </button>
+                  <h2 className="text-4xl font-black tracking-tighter text-white">Vault</h2>
+                  <button onClick={() => setActiveTab("voice")} className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center text-white/40 hover:text-white"><X /></button>
                 </div>
 
-                <div className="flex-1 space-y-10">
-                  <section>
-                    <label className="block text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-5">Primary Destination</label>
-                    <div className="space-y-4">
-                      <div className="p-5 bg-white rounded-[2.5rem] border border-gray-100 shadow-sm focus-within:border-black transition-colors">
-                        <div className="flex items-center gap-2 mb-3">
-                          <MessageSquare size={14} className="text-green-500" />
-                          <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">My WhatsApp Number</span>
-                        </div>
-                        <input 
+                <div className="flex-1 space-y-8 overflow-y-auto pr-2">
+                  <section className="space-y-4">
+                    <div className="flex justify-between items-center px-2">
+                      <span className="text-[10px] font-mono font-black text-white/30 uppercase tracking-widest">Memory Matrix</span>
+                    </div>
+                    
+                    <div className="p-6 bg-white/[0.03] border border-white/5 rounded-[2.5rem]">
+                       <div className="flex items-center gap-3 mb-4">
+                         <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center text-blue-500">
+                           <Database size={18} />
+                         </div>
+                         <div>
+                           <p className="text-sm font-bold">Google Drive Connection</p>
+                           <p className="text-[9px] font-mono text-white/30 uppercase">{isAuthenticated ? `${documents.length} Files Indexed` : 'Account Needed'}</p>
+                         </div>
+                       </div>
+                       {!isAuthenticated ? (
+                         <button onClick={handleConnectDrive} className="w-full py-4 bg-white text-black rounded-2xl font-black text-xs tracking-widest uppercase">Link Drive</button>
+                       ) : (
+                         <div className="flex gap-2">
+                           <button onClick={fetchDocs} className="flex-1 py-3 bg-white/5 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest text-white/60">Refresh Library</button>
+                           <button onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }); window.location.reload(); }} className="flex-1 py-3 bg-red-500/10 border border-red-500/20 rounded-xl text-[10px] font-black uppercase tracking-widest text-red-500">Disconnect</button>
+                         </div>
+                       )}
+                    </div>
+                  </section>
+
+                  <section className="space-y-4">
+                    <span className="text-[10px] font-mono font-black text-white/30 uppercase tracking-widest px-2">Primary Target</span>
+                    <div className="p-6 bg-white/[0.03] border border-white/5 rounded-[2.5rem] space-y-6">
+                       <div>
+                         <div className="flex items-center gap-2 mb-2">
+                           <MessageSquare size={12} className="text-white/40" />
+                           <span className="text-[9px] font-mono font-black text-white/40 uppercase tracking-widest">WhatsApp ID</span>
+                         </div>
+                         <input 
                           type="text" 
                           value={userSettings.whatsapp}
                           onChange={e => setUserSettings({...userSettings, whatsapp: e.target.value})}
-                          className="w-full border-none p-0 focus:ring-0 text-lg font-black"
-                          placeholder="+91..."
-                        />
-                      </div>
-                      <div className="p-5 bg-white rounded-[2.5rem] border border-gray-100 shadow-sm focus-within:border-black transition-colors">
-                        <div className="flex items-center gap-2 mb-3">
-                          <Mail size={14} className="text-blue-500" />
-                          <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">My Email Address</span>
-                        </div>
-                        <input 
+                          className="w-full bg-transparent border-none p-0 focus:ring-0 text-xl font-black text-white"
+                         />
+                       </div>
+                       <div className="h-px bg-white/5"></div>
+                       <div>
+                         <div className="flex items-center gap-2 mb-2">
+                           <Mail size={12} className="text-white/40" />
+                           <span className="text-[9px] font-mono font-black text-white/40 uppercase tracking-widest">Email Backup</span>
+                         </div>
+                         <input 
                           type="email" 
                           value={userSettings.email}
                           onChange={e => setUserSettings({...userSettings, email: e.target.value})}
-                          className="w-full border-none p-0 focus:ring-0 text-lg font-black"
-                          placeholder="hello@..."
-                        />
-                      </div>
-                    </div>
-                  </section>
-
-                  <section>
-                    <label className="block text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-5">Memory Preference</label>
-                    <div className="grid grid-cols-2 gap-4">
-                      <button 
-                        onClick={() => setUserSettings({...userSettings, preferredMethod: 'whatsapp'})}
-                        className={`p-6 rounded-[2.5rem] border transition-all flex flex-col items-center gap-3 ${userSettings.preferredMethod === 'whatsapp' ? 'bg-black text-white shadow-xl shadow-black/20' : 'bg-white text-gray-400 border-gray-100 hover:bg-gray-50'}`}
-                      >
-                        <MessageSquare size={28} />
-                        <span className="text-[10px] font-black uppercase tracking-widest">WhatsApp</span>
-                      </button>
-                      <button 
-                        onClick={() => setUserSettings({...userSettings, preferredMethod: 'email'})}
-                        className={`p-6 rounded-[2.5rem] border transition-all flex flex-col items-center gap-3 ${userSettings.preferredMethod === 'email' ? 'bg-black text-white shadow-xl shadow-black/20' : 'bg-white text-gray-400 border-gray-100 hover:bg-gray-50'}`}
-                      >
-                        <Mail size={28} />
-                        <span className="text-[10px] font-black uppercase tracking-widest">Email</span>
-                      </button>
+                          className="w-full bg-transparent border-none p-0 focus:ring-0 text-xl font-black text-white"
+                         />
+                       </div>
                     </div>
                   </section>
                 </div>
-
-                {isAuthenticated && (
-                  <button 
-                    onClick={async () => {
-                      await fetch("/api/auth/logout", { method: "POST" });
-                      window.location.reload();
-                    }}
-                    className="w-full py-4 text-red-500 font-black text-[10px] uppercase tracking-[0.2em] bg-red-50 rounded-[2rem] active:scale-95 transition-transform"
-                  >
-                    Disconnect Drive
-                  </button>
-                )}
               </motion.div>
             )}
           </AnimatePresence>
+          
+          {/* Main Navigation */}
+          <nav className="h-28 bg-black/40 border-t border-white/5 backdrop-blur-xl flex items-center justify-around px-12 pt-2 pb-10 z-20">
+            <button 
+              onClick={() => setActiveTab("voice")}
+              className={`flex flex-col items-center gap-2 transition-all ${activeTab === 'voice' ? 'text-white' : 'text-white/20'}`}
+            >
+              <div className={`w-14 h-14 rounded-full flex items-center justify-center transition-all ${activeTab === 'voice' ? 'bg-white text-black shadow-[0_0_30px_rgba(255,255,255,0.2)]' : 'bg-transparent'}`}>
+                 <Mic size={24} />
+              </div>
+              <span className="text-[10px] font-mono font-black uppercase tracking-widest">Link</span>
+            </button>
+            <button 
+              onClick={() => setActiveTab("history")}
+              className={`flex flex-col items-center gap-2 transition-all ${activeTab === 'history' ? 'text-white' : 'text-white/20'}`}
+            >
+              <div className={`w-14 h-14 rounded-full flex items-center justify-center transition-all ${activeTab === 'history' ? 'bg-white text-black shadow-[0_0_30px_rgba(255,255,255,0.2)]' : 'bg-transparent'}`}>
+                 <History size={24} />
+              </div>
+              <span className="text-[10px] font-mono font-black uppercase tracking-widest">Logs</span>
+            </button>
+          </nav>
+
+          {/* Bottom Rail */}
+          <div className="h-2 flex justify-center items-center pb-6">
+            <div className="w-32 h-1 bg-white/10 rounded-full"></div>
+          </div>
         </main>
-
-        {/* Tab Navigation */}
-        <nav className="h-28 bg-white border-t border-gray-50 flex items-center justify-around px-12 pt-2 pb-10 relative z-10">
-          <button 
-            onClick={() => setActiveTab("voice")}
-            className={`flex flex-col items-center gap-2 transition-all ${activeTab === 'voice' ? 'text-black' : 'text-gray-300'}`}
-          >
-            <div className={`w-14 h-14 rounded-[2rem] flex items-center justify-center transition-all ${activeTab === 'voice' ? 'bg-black text-white' : 'bg-transparent'}`}>
-               <Mic size={24} />
-            </div>
-            <span className="text-[10px] font-black uppercase tracking-widest">Listen</span>
-          </button>
-          <button 
-            onClick={() => setActiveTab("history")}
-            className={`flex flex-col items-center gap-2 transition-all ${activeTab === 'history' ? 'text-black' : 'text-gray-300'}`}
-          >
-            <div className={`w-14 h-14 rounded-[2rem] flex items-center justify-center transition-all ${activeTab === 'history' ? 'bg-black text-white' : 'bg-transparent'}`}>
-               <History size={24} />
-            </div>
-            <span className="text-[10px] font-black uppercase tracking-widest">Activity</span>
-          </button>
-        </nav>
-
-        {/* Dynamic Notch */}
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-8 bg-gray-900 rounded-b-[2rem] z-30"></div>
-        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 w-36 h-1.5 bg-gray-900 rounded-full z-30 opacity-10"></div>
       </div>
+
+      <style dangerouslySetInnerHTML={{ __html: `
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 2px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background: rgba(255,255,255,0.1);
+          border-radius: 10px;
+        }
+      `}} />
     </div>
   );
 }
