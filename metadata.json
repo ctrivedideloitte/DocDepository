@@ -1,0 +1,6 @@
+{
+  "name": "DocDispatcher",
+  "description": "An AI-powered document delivery system. Simply ask for a document, and DocDispatcher will send it to your email or WhatsApp.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": []
+}
